@@ -3,6 +3,7 @@ from flask_cors import CORS
 import requests
 import re
 import random
+import os
 from bs4 import BeautifulSoup
 import html as html_lib
 import yt_dlp
@@ -64,108 +65,108 @@ def get_fb_video(url):
             "Owner": "@DG_DRIFT"
         }
 
+
 def download_insta_reel(url):
     try:
-        session = requests.Session()
-        ua = generate_user_agent()
-        headers_get = {
-            'User-Agent': ua,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
+        api_key = os.getenv("IGRAM_API_KEY")
+        if not api_key:
+            return {"status": "error", "message": "IGRAM_API_KEY is not configured"}
+
+        if not url or "instagram.com/" not in url.lower():
+            return {"status": "error", "message": "Invalid Instagram URL"}
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json"
         }
-        
-        page_url = 'https://snapdownloader.com/tools/instagram-reels-downloader/download'
-        r_get = session.get(page_url, headers=headers_get, timeout=20)
-        if r_get.status_code != 200:
-            return {"status": "error", "message": f"Initial page fetch failed: {r_get.status_code}"}
-            
-        soup = BeautifulSoup(r_get.text, 'html.parser')
-        csrf_meta = soup.find('meta', attrs={'name': 'csrf-token'})
-        if not csrf_meta:
-            return {"status": "error", "message": "CSRF token not found"}
-        csrf_token = csrf_meta.get('content')
-        
-        api_url_meta = soup.find('meta', attrs={'name': 'api-fetch-url'})
-        api_url = api_url_meta.get('content') if api_url_meta else 'https://grabgram.io/api/fetch/instagram'
-        
-        match = re.search(r'instagram\.com/([^/?#]+)', url)
-        if match:
-            username = match.group(1)
-            if username not in ['p', 'reel', 'stories', 'tv', 'developer', 'about', 'explore']:
-                tool = 'profile'
-            else:
-                tool = 'reels'
+
+        response = requests.get(
+            "https://api.igramapi.com/v1/media",
+            params={"url": url.strip()},
+            headers=headers,
+            timeout=30
+        )
+
+        media = response.json()
+
+        if response.status_code != 200:
+            error = media.get("error", {})
+            return {
+                "status": "error",
+                "message": error.get("message", "Instagram API request failed")
+            }
+
+        formats = media.get("formats") or []
+        video_url = media.get("video_url")
+
+        if not video_url and formats:
+            video_url = formats[0].get("url")
+
+        if not video_url:
+            return {"status": "error", "message": "No video found. This post may be an image."}
+
+        best_format = formats[0] if formats else {}
+        audio_url = best_format.get("audio_url")
+
+        download_payload = {
+            "type": "video",
+            "url": best_format.get("url") or video_url,
+            "filename": "instagram-reel"
+        }
+
+        if audio_url:
+            download_payload["audio_url"] = audio_url
+
+        download_response = requests.post(
+            "https://api.igramapi.com/v1/downloads",
+            headers={**headers, "Content-Type": "application/json"},
+            json=download_payload,
+            timeout=120
+        )
+
+        download_data = download_response.json()
+
+        if download_response.status_code == 200:
+            hd_link = download_data.get("download_url") or video_url
         else:
-            tool = 'reels'
-        
-        headers_post = {
-            'User-Agent': ua,
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-            'X-CSRF-TOKEN': csrf_token,
-            'X-Requested-With': 'XMLHttpRequest',
-            'Origin': 'https://grabgram.io',
-            'Referer': 'https://grabgram.io/en/instagram-reels-downloader',
+            hd_link = video_url
+
+        author = media.get("author") or {}
+        if isinstance(author, dict):
+            username = author.get("username", "Unknown")
+        else:
+            username = str(author)
+
+        caption = media.get("caption") or f"Instagram Reel by {username}"
+
+        duration = media.get("duration", 0)
+        try:
+            duration = int(duration)
+            duration_text = f"{duration // 60:02d}:{duration % 60:02d}"
+        except (ValueError, TypeError):
+            duration_text = "Unknown"
+
+        thumbnail = media.get("thumbnail") or ""
+
+        sd_link = formats[-1].get("url") if len(formats) > 1 else video_url
+
+        return {
+            "status": "success",
+            "video": {
+                "title": caption,
+                "author": username,
+                "duration": duration_text,
+                "thumbnail": thumbnail,
+                "hd": hd_link,
+                "sd": sd_link
+            },
+            "Developer": "t.me/dg_drift",
+            "Main Channel": "@DGDRIFT",
+            "Owner": "@DG_DRIFT"
         }
-        
-        payload = {
-            'url': url.strip(),
-            'tool': tool
-        }
-        
-        r_post = session.post(api_url, headers=headers_post, json=payload, timeout=20)
-        if r_post.status_code != 200:
-            try:
-                err_msg = r_post.json().get('error', 'API request failed')
-                return {"status": "error", "message": err_msg}
-            except:
-                return {"status": "error", "message": f"API request failed with code {r_post.status_code}"}
-            
-        res_json = r_post.json()
-        if not res_json.get('ok'):
-            return {"status": "error", "message": res_json.get('error', 'Failed to fetch media')}
-            
-        data = res_json.get('data', {})
-        items = data.get('items', [])
-        if not items:
-            return {"status": "error", "message": "No media found in API response"}
-            
-        caption = data.get('caption')
-        user_info = data.get('user', {})
-        username = user_info.get('username', 'Unknown')
-        full_name = user_info.get('full_name', 'Unknown')
-        
-        results = []
-        for idx, item in enumerate(items):
-            kind = item.get('kind', 'media')
-            downloads = item.get('downloads', [])
-            if not downloads:
-                continue
-            
-            best_dl = downloads[0]
-            download_url = best_dl.get('url')
-            quality = best_dl.get('label') or best_dl.get('ext') or "Original"
-            
-            title = caption
-            if not title:
-                title = f"Instagram {kind} #{idx+1} by {username} ({full_name})"
-            
-            results.append({
-                "Developer": "t.me/dg_drift",
-                "Download Link": download_url,
-                "Quality": quality,
-                "Title": title,
-                "Main Channel": "@DGDRIFT",
-                "Owner": "@DG_DRIFT"
-            })
-            
-        if not results:
-            return {"status": "error", "message": "No download links found"}
-            
-        if len(results) == 1:
-            return results[0]
-            
-        return results
+
+    except requests.exceptions.Timeout:
+        return {"status": "error", "message": "Instagram API request timed out"}
     except Exception as e:
         return {"status": "error", "message": f"Instagram request failed: {str(e)}"}
 
